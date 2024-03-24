@@ -7,83 +7,58 @@ import java.net.Socket;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public class Server {
     private final int port;
     private final ExecutorService threadPool;
-    private final Map<String, Map<String, Handler>> handlers;
+    private final Map<String, Map<String, Handler>> handlers = new HashMap<>();
 
-    // Конструктор, инициализирующий сервер с указанным портом и пулом потоков
-    public Server(int port, int poolSize) {
+    public Server(int port, ExecutorService threadPool) {
         this.port = port;
-        this.threadPool = Executors.newFixedThreadPool(poolSize);
-        this.handlers = new HashMap<>();
+        this.threadPool = threadPool;
     }
 
-    // Метод для добавления обработчика для указанного метода и пути
     public void addHandler(String method, String path, Handler handler) {
-        // Используем computeIfAbsent для безопасного добавления вложенной Map
         handlers.computeIfAbsent(method, k -> new HashMap<>()).put(path, handler);
     }
 
-    // Метод для запуска сервера и прослушивания подключений
-    public void listen() {
+    public void start() {
         try (ServerSocket serverSocket = new ServerSocket(port)) {
-            System.out.println("Server listening on port " + port);
             while (true) {
-                Socket clientSocket = serverSocket.accept();
-                // Каждое подключение обрабатываем в отдельном потоке из пула
-                threadPool.execute(() -> handleConnection(clientSocket));
+                Socket socket = serverSocket.accept();
+                threadPool.submit(() -> handleConnection(socket));
             }
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    // Метод для обработки подключения от клиента
-    private void handleConnection(Socket clientSocket) {
+    private void handleConnection(Socket socket) {
         try (
-                BufferedOutputStream responseStream = new BufferedOutputStream(clientSocket.getOutputStream());
-                Request request = Request.parse(clientSocket.getInputStream())
+                BufferedOutputStream out = new BufferedOutputStream(socket.getOutputStream())
         ) {
-            Handler handler = findHandler(request.getMethod(), request.getPath());
-            if (handler != null) {
-                handler.handle(request, responseStream);
+            Request request = new Request(socket);
+            String method = request.getMethod();
+            String path = request.getPath();
+
+            if (handlers.containsKey(method) && handlers.get(method).containsKey(path)) {
+                Handler handler = handlers.get(method).get(path);
+                handler.handle(request, out);
             } else {
-                // Если не найден обработчик, возвращаем 404 Not Found
-                responseStream.write("HTTP/1.1 404 Not Found\r\n\r\n".getBytes());
-                responseStream.flush();
+                writeNotFoundResponse(out);
             }
         } catch (IOException e) {
             e.printStackTrace();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
         }
     }
 
-    // Метод для поиска обработчика по методу и пути
-    private Handler findHandler(String method, String path) {
-        return handlers.getOrDefault(method, new HashMap<>()).get(path);
-    }
-
-    // Точка входа в программу
-    public static void main(String[] args) {
-        // Пример использования:
-        final var server = new Server(9999, 64);
-
-        // Добавление хендлеров (обработчиков)
-        server.addHandler("GET", "/messages", (request, responseStream) -> {
-            // Обработка GET запроса на путь "/messages"
-            // TODO: handlers code
-        });
-
-        server.addHandler("POST", "/messages", (request, responseStream) -> {
-            // Обработка POST запроса на путь "/messages"
-            // TODO: handlers code
-        });
-
-        // Запуск сервера
-        server.listen();
+    private void writeNotFoundResponse(BufferedOutputStream out) throws IOException {
+        out.write((
+                "HTTP/1.1 404 Not Found\r\n" +
+                        "Content-Length: 0\r\n" +
+                        "Connection: close\r\n" +
+                        "\r\n"
+        ).getBytes());
+        out.flush();
     }
 }
